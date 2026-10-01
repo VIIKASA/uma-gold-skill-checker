@@ -1,9 +1,13 @@
+from datetime import datetime
 import inspect
 import json
 from pathlib import Path
 from typing import Any
 
 import streamlit as st
+
+from event_utils import continuous_events, display_event_name
+from screen_ocr import capture_and_read_text, event_name_matches, find_umamusume_windows
 
 
 BASE_DIR = Path(__file__).parent
@@ -17,7 +21,10 @@ def load_cards(path: Path = DATA_FILE) -> list[dict[str, Any]]:
         cards = json.load(data_file)
     if not isinstance(cards, list):
         raise ValueError("support_cards.json은 JSON 배열이어야 합니다.")
-    return [card for card in cards if isinstance(card, dict) and card.get("code")]
+    support_cards = [card for card in cards if isinstance(card, dict) and card.get("code")]
+    for card in support_cards:
+        card["events"] = continuous_events(card)
+    return support_cards
 
 
 def gold_skill_names(card: dict[str, Any]) -> list[str]:
@@ -36,8 +43,8 @@ def gold_skill_names(card: dict[str, Any]) -> list[str]:
     return names
 
 
-def choice_task_key(card_code: str, event_index: int, choice_index: int) -> str:
-    return f"{TRACK_KEY_PREFIX}choice::{card_code}::{event_index}::{choice_index}"
+def event_task_key(card_code: str, event_index: int) -> str:
+    return f"{TRACK_KEY_PREFIX}event::{card_code}::{event_index}"
 
 
 def skill_task_key(card_code: str, skill_index: int) -> str:
@@ -48,9 +55,8 @@ def build_tasks(cards: list[dict[str, Any]]) -> list[str]:
     task_keys = []
     for card in cards:
         code = str(card["code"])
-        for event_index, event in enumerate(card.get("events", [])):
-            for choice_index, _ in enumerate(event.get("choices", [])):
-                task_keys.append(choice_task_key(code, event_index, choice_index))
+        for event_index, _ in enumerate(card.get("events", [])):
+            task_keys.append(event_task_key(code, event_index))
         for skill_index, _ in enumerate(gold_skill_names(card)):
             task_keys.append(skill_task_key(code, skill_index))
     return task_keys
@@ -78,8 +84,7 @@ def missed_gold_skill_events(
 
             for event_index, event in enumerate(card.get("events", [])):
                 for choice_index, choice in enumerate(event.get("choices", [])):
-                    choice_key = choice_task_key(code, event_index, choice_index)
-                    if state.get(choice_key, False):
+                    if state.get(event_task_key(code, event_index), False):
                         continue
 
                     linked_skills = [
@@ -104,7 +109,7 @@ def missed_gold_skill_events(
                             {
                                 "card": str(card.get("name", "이름 없는 카드")),
                                 "skill": skill_name,
-                                "event": str(event.get("name", "이름 없는 이벤트")),
+                                "event": display_event_name(str(event.get("name", "이름 없는 이벤트"))),
                                 "choice": str(choice.get("text") or f"선택지 {choice_index + 1}"),
                             }
                         )
@@ -117,27 +122,112 @@ def card_label(card: dict[str, Any]) -> str:
     return f"{card.get('name', '이름 없는 카드')}{suffix}"
 
 
+@st.fragment(run_every=2)
+def render_ocr_monitor(selected_cards: list[dict[str, Any]]) -> None:
+    enabled = st.toggle("화면 OCR 자동 체크", key="ocr_enabled")
+    if not enabled:
+        st.caption("꺼짐")
+        return
+
+    with st.expander("게임 창 선택", expanded=False):
+        try:
+            windows = find_umamusume_windows()
+        except RuntimeError as error:
+            st.warning(str(error))
+            return
+
+        if not windows:
+            st.warning("우마무스메 창을 찾지 못했습니다. 게임을 실행한 뒤 다시 시도하세요.")
+            st.session_state.pop("ocr_selected_window", None)
+            return
+
+        windows_by_handle = {window["handle"]: window for window in windows}
+        window_handles = list(windows_by_handle)
+        if st.session_state.get("ocr_selected_window") not in windows_by_handle:
+            available_window = next(
+                (window for window in windows if not window["is_minimized"]),
+                windows[0],
+            )
+            st.session_state["ocr_selected_window"] = available_window["handle"]
+
+        if st.button("우마무스메 창 자동 선택", use_container_width=True):
+            available_window = next(
+                (window for window in windows if not window["is_minimized"]),
+                windows[0],
+            )
+            st.session_state["ocr_selected_window"] = available_window["handle"]
+
+        selected_handle = st.selectbox(
+            "감지된 게임 창",
+            options=window_handles,
+            format_func=lambda handle: windows_by_handle[handle]["title"],
+            key="ocr_selected_window",
+        )
+        selected_window = windows_by_handle[selected_handle]
+
+    if selected_window["is_minimized"]:
+        st.warning("선택한 우마무스메 창이 최소화되어 있습니다. 창을 복원하면 자동 감지가 재개됩니다.")
+        return
+
+    with st.expander("OCR 설정", expanded=False):
+        tesseract_cmd = st.text_input(
+            "Tesseract 경로 (선택)",
+            placeholder="PATH에 등록되어 있으면 비워 두세요",
+            key="ocr_tesseract_cmd",
+        )
+
+    try:
+        recognized_text = capture_and_read_text(selected_window, tesseract_cmd)
+    except RuntimeError as error:
+        st.warning(str(error))
+        return
+
+    detected = []
+    for card in selected_cards:
+        code = str(card["code"])
+        for event_index, event in enumerate(card.get("events", [])):
+            if not event_name_matches(str(event.get("name", "")), recognized_text):
+                continue
+            task_key = event_task_key(code, event_index)
+            if not st.session_state.get(task_key, False):
+                st.session_state[task_key] = True
+                detected.append(display_event_name(str(event.get("name", "이벤트"))))
+
+    if detected:
+        st.session_state["ocr_last_detected"] = ", ".join(detected)
+        st.session_state["ocr_last_detected_at"] = datetime.now().strftime("%H:%M:%S")
+        st.rerun(scope="app")
+
+    last_detected = st.session_state.get("ocr_last_detected", "")
+    if last_detected:
+        st.caption(f"감지 {st.session_state.get('ocr_last_detected_at', '')} · {last_detected}")
+    else:
+        st.caption("감지 대기 중")
+
+
 st.set_page_config(
     page_title="육성 체크보드 | 우마무스메",
     page_icon="🏇",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# 다크 모드 전용 커스텀 스타일 적용
 st.markdown(
     """
     <style>
     :root {
-        --ink: #19352b;
-        --muted: #65756d;
-        --paper: #f4f6f0;
-        --panel: #ffffff;
-        --line: #d9e1d8;
-        --leaf: #3f7958;
-        --coral: #d9674e;
+        --ink: #f1f5f9;
+        --muted: #94a3b8;
+        --paper: #0f172a;
+        --panel: #1e293b;
+        --line: #334155;
+        --leaf: #34d399;
+        --coral: #fbbf24;
     }
     .stApp { background: var(--paper); color: var(--ink); }
     .block-container { max-width: 1360px; padding-top: 2rem; padding-bottom: 3rem; }
-    [data-testid="stSidebar"] { background: #eaf0e8; border-right: 1px solid var(--line); }
+    [data-testid="stSidebar"] { background: #090d16; border-right: 1px solid var(--line); }
     [data-testid="stSidebar"] .block-container { padding-top: 1.6rem; }
     h1, h2, h3 { color: var(--ink); }
     h1 { font-family: Georgia, "Batang", serif; font-size: 2.2rem; }
@@ -210,26 +300,25 @@ with st.sidebar:
         st.rerun()
 
 selected_cards = [cards_by_code[code] for code in selected_codes]
-task_keys = build_tasks(selected_cards)
-completed_tasks = sum(bool(st.session_state.get(key, False)) for key in task_keys)
-remaining_tasks = len(task_keys) - completed_tasks
+event_total = sum(len(card.get("events", [])) for card in selected_cards)
+event_completed = sum(
+    bool(st.session_state.get(event_task_key(str(card["code"]), event_index), False))
+    for card in selected_cards
+    for event_index, _ in enumerate(card.get("events", []))
+)
 missed_gold_events = missed_gold_skill_events(selected_cards, st.session_state)
 
 with st.sidebar:
-    st.markdown("### ⚠️ 누락된 금색 스킬 경고")
+    render_ocr_monitor(selected_cards)
     if missed_gold_events:
-        st.warning(f"미완료 이벤트 {len(missed_gold_events)}개")
-        for missed_event in missed_gold_events:
-            st.markdown(f"**{missed_event['card']}** · {missed_event['skill']}")
-            st.caption(f"{missed_event['event']} / {missed_event['choice']}")
-    else:
-        st.caption("현재 누락된 금색 스킬 이벤트가 없습니다.")
+        with st.expander(f"금색 스킬 연결 이벤트 {len(missed_gold_events)}개"):
+            for missed_event in missed_gold_events:
+                st.caption(f"{missed_event['card']} · {missed_event['skill']} · {missed_event['event']}")
 
-metric_columns = st.columns(3)
+metric_columns = st.columns(2)
 metric_columns[0].metric("선택 카드", f"{len(selected_cards)} / {MAX_SELECTED_CARDS}")
-metric_columns[1].metric("완료 항목", f"{completed_tasks} / {len(task_keys)}")
-metric_columns[2].metric("남은 항목", remaining_tasks)
-st.progress(completed_tasks / len(task_keys) if task_keys else 0.0)
+metric_columns[1].metric("완료 항목", f"{event_completed} / {event_total}")
+st.progress(event_completed / event_total if event_total else 0.0)
 st.divider()
 
 if not selected_cards:
@@ -241,53 +330,39 @@ for card, card_tab in zip(selected_cards, card_tabs):
     code = str(card["code"])
     with card_tab:
         st.markdown(f"### {card.get('name', '이름 없는 카드')}")
-        st.caption(" · ".join(value for value in (card.get("type", ""), card.get("rarity", "")) if value))
-        event_column, skill_column = st.columns([1.7, 1], gap="large")
+        events = card.get("events", [])
+        skill_names = gold_skill_names(card)
+        card_event_done = sum(
+            bool(st.session_state.get(event_task_key(code, index), False))
+            for index in range(len(events))
+        )
+        card_skill_done = sum(
+            bool(st.session_state.get(skill_task_key(code, index), False))
+            for index in range(len(skill_names))
+        )
+        st.caption(
+            f"{card.get('type', '')} · 연속 이벤트 {card_event_done}/{len(events)}"
+            f" · 금색 스킬 {card_skill_done}/{len(skill_names)}"
+        )
+        st.progress(card_event_done / len(events) if events else 0.0)
+        event_column, skill_column = st.columns([1.7, 1], gap="medium")
 
         with event_column:
-            st.markdown("#### 이벤트 선택지")
-            events = card.get("events", [])
+            st.markdown("#### 연속 이벤트")
             if not events:
-                st.caption("이벤트 정보가 없습니다.")
+                st.caption("등록된 연속 이벤트가 없습니다.")
             for event_index, event in enumerate(events):
-                st.markdown(f"**{event.get('name', '이름 없는 이벤트')}**")
-                choices = event.get("choices", [])
-                if not choices:
-                    st.caption("선택지 정보가 없습니다.")
-                for choice_index, choice in enumerate(choices):
-                    label = choice.get("text") or f"선택지 {choice_index + 1}"
-                    st.checkbox(
-                        label,
-                        key=choice_task_key(code, event_index, choice_index),
-                    )
-                    rewards = choice.get("rewards", [])
-                    linked_skills = [
-                        skill.get("name", "")
-                        for skill in choice.get("skills", [])
-                        if isinstance(skill, dict) and skill.get("name")
-                    ]
-                    detail_parts = []
-                    if rewards:
-                        detail_parts.append("보상: " + " / ".join(rewards))
-                    if linked_skills:
-                        detail_parts.append("스킬: " + ", ".join(linked_skills))
-                    if detail_parts:
-                        st.caption(" · ".join(detail_parts))
+                st.checkbox(
+                    display_event_name(str(event.get("name", "이름 없는 이벤트"))),
+                    key=event_task_key(code, event_index),
+                )
 
         with skill_column:
             st.markdown("#### 금색 스킬")
-            skill_names = gold_skill_names(card)
             if not skill_names:
                 st.caption("등록된 금색 스킬이 없습니다.")
-            all_skills = [
-                skill for skill in card.get("skills", [])
-                if isinstance(skill, dict) and skill.get("is_gold")
-            ]
             for skill_index, name in enumerate(skill_names):
                 st.checkbox(
                     name,
                     key=skill_task_key(code, skill_index),
                 )
-                matching_skill = next((skill for skill in all_skills if skill.get("name") == name), None)
-                if matching_skill and matching_skill.get("acquisition"):
-                    st.caption(matching_skill["acquisition"])

@@ -11,6 +11,8 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
+from event_utils import is_continuous_event
+
 
 BASE_URL = "https://uma.inven.co.kr"
 DECKBUILDER_URL = f"{BASE_URL}/dataninfo/deckbuilder/"
@@ -67,6 +69,8 @@ def parse_event_choices(payload: Any) -> list[dict[str, Any]]:
     events = []
     for item in payload:
         if not isinstance(item, dict) or not item.get("name"):
+            continue
+        if not is_continuous_event(item):
             continue
 
         choices = []

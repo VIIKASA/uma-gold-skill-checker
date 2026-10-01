@@ -12,9 +12,13 @@ streamlit run app.py
 
 `make_json.py`는 최초 데이터 생성 또는 개발자 수동 갱신 시 한 번만 실행합니다. `app.py`는 로컬 JSON만 읽으며 크롤링하지 않습니다.
 
+화면 OCR 자동 체크는 앱의 사이드바에서 켤 수 있습니다. `우마무스메 창 자동 선택` 버튼을 누르거나 감지된 게임 창을 드롭다운에서 선택하면 해당 창 영역만 캡처합니다. 게임 창이 실행되지 않았거나 최소화된 경우 안내가 표시됩니다. Python 패키지 외에 Tesseract OCR 실행 파일과 한국어 학습 데이터(`kor.traineddata`)가 필요합니다. Tesseract가 `PATH`에 없으면 앱의 경로 입력란에 `tesseract.exe` 경로를 지정하세요.
+
+앱과 데이터 생성기는 이름 앞에 번호(①, ②, ③ 등)가 붙은 서포트 카드 연속 이벤트만 표시하고 저장합니다. 기존 `support_cards.json`에도 같은 필터가 적용됩니다.
+
 ## 데이터 형식
 
-`data/support_cards.json`은 카드별 `events[].choices[]`, `skills[]`, `gold_skills[]`를 포함하는 JSON 배열입니다. 앱은 여기서 선택한 최대 6장의 체크 상태를 세션 동안 유지합니다.
+`data/support_cards.json`은 카드별 연속 이벤트 `events[]`, `skills[]`, `gold_skills[]`를 포함하는 JSON 배열입니다. 앱은 여기서 선택한 최대 6장의 이벤트 및 금색 스킬 체크 상태를 세션 동안 유지합니다.
 
 ```json
 [
