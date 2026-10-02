@@ -12,6 +12,20 @@ streamlit run app.py
 
 `make_json.py`는 최초 데이터 생성 또는 개발자 수동 갱신 시 한 번만 실행합니다. `app.py`는 로컬 JSON만 읽으며 크롤링하지 않습니다.
 
+## Windows 실행 파일 빌드
+
+개발 PC에서 Python 3과 인터넷 연결이 필요합니다. 프로젝트 루트에서 `build.bat`을 더블클릭하거나 터미널에서 한 번 실행하세요.
+
+```bat
+build.bat
+```
+
+스크립트가 `.venv`를 만들고 앱 의존성과 PyInstaller를 설치한 뒤, `dist\UmaGoldSkill.exe`를 생성합니다. 실행 파일은 Streamlit 서버를 시작하고 기본 브라우저를 엽니다. 빌드한 Windows 실행 파일만 사용하는 사람은 Python을 설치할 필요가 없습니다. Windows용 빌드는 Windows에서 수행해야 합니다.
+
+빌드 시 `UmaGoldSkill.spec`이 `app.py`와 `data\support_cards.json`을 번들 루트 및 `data` 폴더 경로로 포함하고, Streamlit·PyDeck·OpenCV 리소스와 동적 import를 수집합니다. 데이터 파일을 바꾸면 실행 파일을 다시 빌드하세요.
+
+화면 OCR에는 Python과 별개인 Tesseract OCR 실행 파일 및 한국어 데이터(`kor.traineddata`)가 필요합니다. 실행 파일만 배포하는 경우에도 대상 PC에 Tesseract를 설치하고, 앱의 OCR 설정에 실행 파일 경로를 지정해야 OCR 자동 체크를 사용할 수 있습니다.
+
 화면 OCR 자동 체크는 앱의 사이드바에서 켤 수 있습니다. `우마무스메 창 자동 선택` 버튼을 누르거나 감지된 게임 창을 드롭다운에서 선택하면 해당 창 영역만 캡처합니다. 게임 창이 실행되지 않았거나 최소화된 경우 안내가 표시됩니다. Python 패키지 외에 Tesseract OCR 실행 파일과 한국어 학습 데이터(`kor.traineddata`)가 필요합니다. Tesseract가 `PATH`에 없으면 앱의 경로 입력란에 `tesseract.exe` 경로를 지정하세요.
 
 앱과 데이터 생성기는 이름 앞에 번호(①, ②, ③ 등)가 붙은 서포트 카드 연속 이벤트만 표시하고 저장합니다. 기존 `support_cards.json`에도 같은 필터가 적용됩니다.
